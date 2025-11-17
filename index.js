@@ -36,7 +36,7 @@ app.get('/api', (req, res) => {
 });
 
 // вход пользователя в аппку
-app.post('/enter', async (req, res) => {
+app.post('/api/enter', async (req, res) => {
   try {
     const { tlgid } = req.body;
 
@@ -93,7 +93,7 @@ async function createNewUser(tlgid) {
 }
 
 // получение баланса пользователя
-app.get('/getBalance', async (req, res) => {
+app.get('/api/getBalance', async (req, res) => {
   try {
     const { tlgid } = req.query;
 
@@ -127,7 +127,7 @@ app.get('/getBalance', async (req, res) => {
 });
 
 // получение всех AI моделей
-app.get('/getAiModels', async (req, res) => {
+app.get('/api/getAiModels', async (req, res) => {
   try {
     const { tlgid } = req.query;
 
@@ -175,7 +175,7 @@ function generateRandomString(length = 15) {
 }
 
 // получение выбранных моделей пользователя
-app.get('/getUserChosenModels', async (req, res) => {
+app.get('/api/getUserChosenModels', async (req, res) => {
   try {
     const { tlgid } = req.query;
 
@@ -205,7 +205,7 @@ app.get('/getUserChosenModels', async (req, res) => {
 });
 
 // выбор AI модели пользователем
-app.post('/chooseAiModel', async (req, res) => {
+app.post('/api/chooseAiModel', async (req, res) => {
   try {
     const { modelId, tlgid } = req.body;
 
@@ -267,7 +267,7 @@ app.post('/chooseAiModel', async (req, res) => {
 });
 
 // удаление выбранной модели пользователем
-app.delete('/deleteChosenModel', async (req, res) => {
+app.delete('/api/deleteChosenModel', async (req, res) => {
   try {
     const { chosenModelId } = req.body;
 
@@ -305,7 +305,7 @@ app.delete('/deleteChosenModel', async (req, res) => {
 
 
 // новый запрос
-app.post('/request', async (req, res) => {
+app.post('/api/request', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
@@ -379,7 +379,7 @@ app.post('/request', async (req, res) => {
 
 
 // Webhook об оплате
-app.post('/webhook_payment', async (req, res) => {
+app.post('/api/webhook_payment', async (req, res) => {
   try {
 
     const {paydUser, paydSum} = req.body
@@ -573,7 +573,7 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
 }
 
 // для создания новых моделей
-app.post('/createAiModel', async (req, res) => {
+app.post('/api/createAiModel', async (req, res) => {
   try {
     const doc = new AiModel({
       nameForUser: 'gpt-4.1-nano',
