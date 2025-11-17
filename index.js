@@ -369,9 +369,8 @@ app.post('/api/request', async (req, res) => {
   } catch (err) {
     console.error('Error choosing AI model:', err);
     return res.status(500).json({
-      status: 'error',
-      message: 'Failed to save choice',
-      error: err.message,
+      status: 'error'
+      
     });
   }
 });
@@ -453,7 +452,8 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
       throw new Error('AI Model not found');
     }
 
-    const ourAiToken = aiModelData.ourToken;
+    // const ourAiToken = aiModelData.ourToken;
+    const ourAiToken = process.env.GPT_TOKEN
     const modelName = aiModelData.nameForRequest;
 
     const input_token_priceBasicUsd = aiModelData.input_token_priceBasicUsd;
