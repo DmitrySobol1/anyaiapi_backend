@@ -164,7 +164,7 @@ app.get('/api/getAiModels', async (req, res) => {
 });
 
 // Функция для генерации случайной строки
-function generateRandomString(length = 15) {
+function generateRandomString(length = 25) {
   const characters =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let result = '';
@@ -576,12 +576,12 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
 app.post('/api/createAiModel', async (req, res) => {
   try {
     const doc = new AiModel({
-      nameForUser: 'gpt-4.1-nano',
-      nameForRequest: 'gpt-4.1-nano', 
-      input_token_priceBasicUsd: 0.1 ,
-      output_token_priceBasicUsd: 0.4 ,
-      input_token_priceOurRub: 16.6,
-      output_token_priceOurRub: 66.4
+      nameForUser: 'gpt-5.1',
+      nameForRequest: 'gpt-5.1', 
+      input_token_priceBasicUsd: 1.25 ,
+      output_token_priceBasicUsd: 10 ,
+      input_token_priceOurRub: 207.5,
+      output_token_priceOurRub: 1660
     });
 
     await doc.save(); // Сохранение в БД
