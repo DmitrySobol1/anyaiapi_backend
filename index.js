@@ -242,7 +242,7 @@ app.post('/api/chooseAiModel', async (req, res) => {
     }
 
     // Генерируем случайный токен
-    const token = generateRandomString(15);
+    const token = generateRandomString(25);
 
     // Создаем новую запись
     const doc = new UserChoosedModel({
