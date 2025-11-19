@@ -113,9 +113,11 @@ app.get('/api/getBalance', async (req, res) => {
       });
     }
 
+    const fixedBalance = user.balance.toFixed(2)
+
     return res.json({
       status: 'success',
-      balance: user.balance,
+      balance: fixedBalance,
     });
   } catch (err) {
     console.error('Error fetching balance:', err);
@@ -454,10 +456,12 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
 
     // const ourAiToken = aiModelData.ourToken;
     const ourAiToken = process.env.GPT_TOKEN
+    console.log('token=',ourAiToken)
     const modelName = aiModelData.nameForRequest;
 
     const input_token_priceBasicUsd = aiModelData.input_token_priceBasicUsd;
     const output_token_priceBasicUsd = aiModelData.output_token_priceBasicUsd;
+    const pathToGetResponseFromAi = aiModelData.path
 
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -555,11 +559,42 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
     );
 
 
-
+    console.log('reply=',data?.output)
 
 
     // Извлечение ответа от AI
-    const replyFromAi = data?.output?.[0]?.content?.[0]?.text || '';
+    // const replyFromAi = data?.output?.[0]?.content?.[0]?.text || '';
+
+    console.log('Исходный путь:', pathToGetResponseFromAi)
+    console.log('Полный ответ от API:', JSON.stringify(data, null, 2))
+
+    // Функция для извлечения значения по строковому пути
+    const getValueByPath = (obj, path) => {
+      if (!path) return '';
+
+      // Удаляем префикс "data?." или "data." если есть
+      let cleanPath = path.replace(/^data\??\./i, '');
+
+      // Убираем все символы optional chaining '?'
+      cleanPath = cleanPath.replace(/\?/g, '');
+
+      // Преобразуем [0] в .0 для единообразия
+      cleanPath = cleanPath.replace(/\[(\d+)\]/g, '.$1');
+
+      // Разбиваем путь на ключи
+      const keys = cleanPath.split('.').filter(Boolean);
+
+      // Проходим по всем ключам
+      let result = obj;
+      for (const key of keys) {
+        if (result == null) return '';
+        result = result[key];
+      }
+
+      return result || '';
+    };
+
+    const replyFromAi = getValueByPath(data, pathToGetResponseFromAi);
 
     if (!replyFromAi) {
       console.warn('No reply text found in AI response');
@@ -572,12 +607,60 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
   }
 }
 
+// получение истории запросов пользователя
+app.get('/api/getRequestHistory', async (req, res) => {
+  try {
+    const { tlgid } = req.query;
+
+    if (!tlgid) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'tlgid is required',
+      });
+    }
+
+    // Находим все запросы пользователя по tlgid
+    const requests = await RequestModel.find({ ownerTlg: tlgid })
+      .populate('aiModelLink')
+      .sort({ createdAt: -1 }); // Сортировка по дате создания (новые сверху)
+
+    // Форматируем даты для каждого запроса
+    const formattedRequests = requests.map((request) => {
+      const date = new Date(request.createdAt);
+      const formattedDate = date.toLocaleString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      return {
+        ...request._doc,
+        formattedDate: formattedDate,
+      };
+    });
+
+    return res.json({
+      status: 'success',
+      requests: formattedRequests,
+    });
+  } catch (err) {
+    console.error('Error fetching request history:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch request history',
+      error: err.message,
+    });
+  }
+});
+
 // для создания новых моделей
 app.post('/api/createAiModel', async (req, res) => {
   try {
     const doc = new AiModel({
       nameForUser: 'gpt-5.1',
-      nameForRequest: 'gpt-5.1', 
+      nameForRequest: 'gpt-5.1',
       input_token_priceBasicUsd: 1.25 ,
       output_token_priceBasicUsd: 10 ,
       input_token_priceOurRub: 207.5,

@@ -33,6 +33,9 @@ const AiModelsSchema = new mongoose.Schema(
     output_token_priceOurRub: {
       type: Number
     },
+    path: {
+      type: String
+    }
 
     
   },
