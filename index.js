@@ -11,6 +11,8 @@ import AiModel from './models/aimodels.js';
 import UserChoosedModel from './models/userChoosedModels.js';
 import RequestModel from './models/request.js';
 import OurKoefficientModel from './models/ourKoefficient.js';
+import PromocodeModel from './models/promocode.js';
+import UsersWhoUsedPromocodeModel from './models/usersWhoUsedPromocode.js';
 
 const app = express();
 const PORT = process.env.PORT || 4444;
@@ -674,6 +676,112 @@ app.post('/api/createAiModel', async (req, res) => {
     console.error('Error creating AI model:', err);
   }
 });
+
+
+// для создания новых промокодов
+app.post('/api/createPromocode', async (req, res) => {
+  try {
+    const doc = new PromocodeModel({
+      promocode: 'easydev',
+      balance: 50,
+      isActive: true ,
+
+    });
+
+    await doc.save(); // Сохранение в БД
+
+    return res.status(201).json({ status: 'created', promocode: doc });
+  } catch (err) {
+    console.error('Error creating new promocode', err);
+  }
+});
+
+// проверка и применение промокода
+app.post('/api/applyPromocode', async (req, res) => {
+  try {
+    const { promocode, tlgid } = req.body;
+
+    if (!promocode || !tlgid) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'promocode and tlgid are required',
+      });
+    }
+
+    // Проверяем существует ли промокод и активен ли он
+    const promocodeData = await PromocodeModel.findOne({
+      promocode: promocode,
+      isActive: true,
+    });
+
+    // Если промокод не найден или не активен
+    if (!promocodeData) {
+      return res.json({
+        status: 'notFound',
+        message: 'Промокод не действует',
+      });
+    }
+
+    // Проверяем существует ли пользователь
+    const user = await UserModel.findOne({ tlgid: tlgid });
+
+    if (!user) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User not found',
+      });
+    }
+
+    // Проверяем не использовал ли уже пользователь этот промокод
+    const alreadyUsed = await UsersWhoUsedPromocodeModel.findOne({
+      userLink: user._id,
+      promocodeLink: promocodeData._id,
+    });
+
+    if (alreadyUsed) {
+      return res.json({
+        status: 'alreadyUsed',
+        message: 'Вы уже использовали этот промокод',
+      });
+    }
+
+    // Начисляем баланс пользователю
+    const updatedUser = await UserModel.findOneAndUpdate(
+      { tlgid: tlgid },
+      {
+        $inc: {
+          balance: promocodeData.balance,
+        },
+      },
+      { new: true }
+    );
+
+    // Записываем информацию об использовании промокода
+    const usageRecord = new UsersWhoUsedPromocodeModel({
+      userLink: user._id,
+      userTlg: tlgid,
+      promocodeLink: promocodeData._id,
+      balanceWasPresented: promocodeData.balance,
+    });
+
+    await usageRecord.save();
+
+    return res.json({
+      status: 'success',
+      message: 'Промокод успешно применен',
+      balance: updatedUser.balance.toFixed(2),
+      addedBalance: promocodeData.balance,
+    });
+  } catch (err) {
+    console.error('Error applying promocode:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Failed to apply promocode',
+      error: err.message,
+    });
+  }
+});
+
 
 // 404 handler
 app.use((req, res) => {
