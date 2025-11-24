@@ -82,6 +82,8 @@ function telegramAuthMiddleware(req, res, next) {
 
   const initData = req.headers['x-telegram-init-data'];
 
+  console.log('initData',initData)
+
   if (!initData) {
     return res.status(401).json({
       status: 'error',
