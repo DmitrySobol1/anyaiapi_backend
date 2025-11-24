@@ -28,6 +28,89 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Функция валидации Telegram initData
+function validateTelegramInitData(initData, botToken) {
+  try {
+    const urlParams = new URLSearchParams(initData);
+    const hash = urlParams.get('hash');
+
+    if (!hash) return { valid: false, user: null };
+
+    urlParams.delete('hash');
+
+    // Сортируем параметры и создаём строку для проверки
+    const dataCheckString = Array.from(urlParams.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    // Создаём секретный ключ
+    const secretKey = crypto
+      .createHmac('sha256', 'WebAppData')
+      .update(botToken)
+      .digest();
+
+    // Вычисляем хеш
+    const calculatedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+
+    if (calculatedHash !== hash) {
+      return { valid: false, user: null };
+    }
+
+    // Извлекаем данные пользователя
+    const userString = urlParams.get('user');
+    const user = userString ? JSON.parse(userString) : null;
+
+    return { valid: true, user };
+  } catch (err) {
+    console.error('Error validating Telegram initData:', err);
+    return { valid: false, user: null };
+  }
+}
+
+// Middleware для проверки Telegram авторизации
+function telegramAuthMiddleware(req, res, next) {
+  // В dev-режиме пропускаем проверку (УБРАТЬ В ПРОДАКШЕНЕ!)
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[DEV] Skipping Telegram auth validation');
+    req.telegramUser = { id: req.query.tlgid || req.body.tlgid };
+    return next();
+  }
+
+  const initData = req.headers['x-telegram-init-data'];
+
+  if (!initData) {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Unauthorized: initData required',
+    });
+  }
+
+  const { valid, user } = validateTelegramInitData(initData, process.env.BOT_TOKEN);
+
+  if (!valid) {
+    return res.status(401).json({
+      status: 'error',
+      message: 'Unauthorized: invalid signature',
+    });
+  }
+
+  // Проверяем, что tlgid в запросе совпадает с user.id из initData
+  const requestTlgid = req.query.tlgid || req.body.tlgid;
+  if (requestTlgid && String(requestTlgid) !== String(user.id)) {
+    return res.status(403).json({
+      status: 'error',
+      message: 'Forbidden: tlgid mismatch',
+    });
+  }
+
+  req.telegramUser = user;
+  next();
+}
+
 // Routes
 app.get('/api', (req, res) => {
   console.log('rqst from bot done');
@@ -42,38 +125,46 @@ app.post('/api/enter', async (req, res) => {
   try {
     const { tlgid } = req.body;
 
+    // Проверка наличия tlgid
+    if (!tlgid) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'tlgid is required',
+      });
+    }
+
     const user = await UserModel.findOne({ tlgid: tlgid });
 
     //создание юзера
     if (!user) {
       const createresponse = await createNewUser(tlgid);
 
-      // if (!createresponse) {
-      //   throw new Error('ошибка в функции createNewUser');
-      // }
-
-      if (createresponse.status == 'created') {
-        const userData = {};
-        console.log('showOnboarding');
-        userData.result = 'showOnboarding';
-        return res.json({ userData });
+      // Проверка на ошибку создания пользователя
+      if (!createresponse || createresponse.status !== 'created') {
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to create user',
+        });
       }
+
+      const userData = {};
+      console.log('showOnboarding');
+      userData.result = 'showOnboarding';
+      return res.json({ status: 'success', userData });
     }
 
     // извлечь инфо о юзере из БД и передать на фронт действие
     const { _id, ...userData } = user._doc;
     userData.result = 'showIndexPage';
     console.log('showIndexPage');
-    return res.json({ userData });
+    return res.json({ status: 'success', userData });
   } catch (err) {
-    // logger.error({
-    //       title: 'Error in endpoint /system/enter',
-    //       message: err.message,
-    //       dataFromServer: err.response?.data,
-    //       statusFromServer: err.response?.status,
-    //     });
+    console.error('Error in /api/enter:', err);
+    return res.status(500).json({
+      status: 'error',
+      message: 'Internal server error',
+    });
   }
-  return res.json({ statusBE: 'notOk' });
 });
 
 async function createNewUser(tlgid) {
@@ -90,7 +181,8 @@ async function createNewUser(tlgid) {
 
     return { status: 'created' };
   } catch (err) {
-    return false;
+    console.error('Error in createNewUser:', err);
+    return { status: 'error', message: err.message };
   }
 }
 
@@ -140,7 +232,7 @@ app.get('/api/getAiModels', async (req, res) => {
 
     // Если tlgid не передан, возвращаем модели без поля isChoosed
     if (!tlgid) {
-      return res.json({ models });
+      return res.json({ status: 'success', models });
     }
 
     // Получаем модели, выбранные пользователем
@@ -157,7 +249,7 @@ app.get('/api/getAiModels', async (req, res) => {
       isChoosed: choosedModelIds.has(model._id.toString()),
     }));
 
-    return res.json({ models: modelsWithChoosedFlag });
+    return res.json({ status: 'success', models: modelsWithChoosedFlag });
   } catch (err) {
     console.error('Error fetching AI models:', err);
     return res.status(500).json({
@@ -178,8 +270,8 @@ function generateRandomString(length = 25) {
   return result;
 }
 
-// получение выбранных моделей пользователя
-app.get('/api/getUserChosenModels', async (req, res) => {
+// получение выбранных моделей пользователя (защищено telegramAuthMiddleware)
+app.get('/api/getUserChosenModels', telegramAuthMiddleware, async (req, res) => {
   try {
     const { tlgid } = req.query;
 
@@ -196,6 +288,7 @@ app.get('/api/getUserChosenModels', async (req, res) => {
       .populate('userLink');
 
     return res.json({
+      status: 'success',
       models: chosenModels,
     });
   } catch (err) {
