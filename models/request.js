@@ -41,6 +41,9 @@ const RequestSchema = new mongoose.Schema(
     },
     rate: {
       type: Number
+    },
+    type: {
+      type: String
     }
 
   },

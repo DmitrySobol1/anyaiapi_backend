@@ -3,8 +3,17 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import crypto from 'crypto';
+import OpenAI from 'openai';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { v4 as uuidv4 } from 'uuid';
 
 dotenv.config();
+
+// Получаем __dirname для ES модулей
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 import UserModel from './models/user.js';
 import AiModel from './models/aimodels.js';
@@ -27,6 +36,9 @@ mongoose
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Раздача статических файлов из папки uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Функция валидации Telegram initData
 function validateTelegramInitData(initData, botToken) {
@@ -71,6 +83,43 @@ function validateTelegramInitData(initData, botToken) {
   }
 }
 
+// Функция для сохранения base64 изображения
+function saveBase64Image(base64Data) {
+  try {
+    // Извлекаем чистый base64 из data URL (убираем "data:image/png;base64,")
+    const base64Match = base64Data.match(/^data:image\/(\w+);base64,(.+)$/);
+
+    if (!base64Match) {
+      throw new Error('Invalid base64 image format');
+    }
+
+    const imageType = base64Match[1]; // png, jpeg, etc.
+    const base64Image = base64Match[2];
+
+    // Декодируем base64 в Buffer
+    const imageBuffer = Buffer.from(base64Image, 'base64');
+
+    // Генерируем уникальное имя файла
+    const fileName = `${uuidv4()}.${imageType}`;
+    const uploadsDir = path.join(__dirname, 'uploads', 'images');
+    const filePath = path.join(uploadsDir, fileName);
+
+    // Создаем директорию если не существует
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    // Сохраняем файл
+    fs.writeFileSync(filePath, imageBuffer);
+
+    // Возвращаем относительный путь для URL
+    return `/uploads/images/${fileName}`;
+  } catch (err) {
+    console.error('Error saving base64 image:', err);
+    throw err;
+  }
+}
+
 // Middleware для проверки Telegram авторизации
 function telegramAuthMiddleware(req, res, next) {
   // В dev-режиме пропускаем проверку (УБРАТЬ В ПРОДАКШЕНЕ!)
@@ -82,7 +131,6 @@ function telegramAuthMiddleware(req, res, next) {
 
   const initData = req.headers['x-telegram-init-data'];
 
-
   if (!initData) {
     return res.status(401).json({
       status: 'error',
@@ -90,7 +138,10 @@ function telegramAuthMiddleware(req, res, next) {
     });
   }
 
-  const { valid, user } = validateTelegramInitData(initData, process.env.BOT_TOKEN);
+  const { valid, user } = validateTelegramInitData(
+    initData,
+    process.env.BOT_TOKEN
+  );
 
   if (!valid) {
     return res.status(401).json({
@@ -208,7 +259,7 @@ app.get('/api/getBalance', async (req, res) => {
       });
     }
 
-    const fixedBalance = user.balance.toFixed(2)
+    const fixedBalance = user.balance.toFixed(2);
 
     return res.json({
       status: 'success',
@@ -272,35 +323,39 @@ function generateRandomString(length = 25) {
 }
 
 // получение выбранных моделей пользователя (защищено telegramAuthMiddleware)
-app.get('/api/getUserChosenModels', telegramAuthMiddleware, async (req, res) => {
-  try {
-    const { tlgid } = req.query;
+app.get(
+  '/api/getUserChosenModels',
+  telegramAuthMiddleware,
+  async (req, res) => {
+    try {
+      const { tlgid } = req.query;
 
-    if (!tlgid) {
-      return res.status(400).json({
+      if (!tlgid) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'tlgid is required',
+        });
+      }
+
+      // Находим все выбранные модели пользователя с populate
+      const chosenModels = await UserChoosedModel.find({ tlgid: tlgid })
+        .populate('aiModelLink')
+        .populate('userLink');
+
+      return res.json({
+        status: 'success',
+        models: chosenModels,
+      });
+    } catch (err) {
+      console.error('Error fetching user chosen models:', err);
+      return res.status(500).json({
         status: 'error',
-        message: 'tlgid is required',
+        message: 'Failed to fetch chosen models',
+        error: err.message,
       });
     }
-
-    // Находим все выбранные модели пользователя с populate
-    const chosenModels = await UserChoosedModel.find({ tlgid: tlgid })
-      .populate('aiModelLink')
-      .populate('userLink');
-
-    return res.json({
-      status: 'success',
-      models: chosenModels,
-    });
-  } catch (err) {
-    console.error('Error fetching user chosen models:', err);
-    return res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch chosen models',
-      error: err.message,
-    });
   }
-});
+);
 
 // выбор AI модели пользователем
 app.post('/api/chooseAiModel', async (req, res) => {
@@ -377,7 +432,9 @@ app.delete('/api/deleteChosenModel', async (req, res) => {
     }
 
     // Удаляем запись из БД
-    const deletedModel = await UserChoosedModel.findByIdAndDelete(chosenModelId);
+    const deletedModel = await UserChoosedModel.findByIdAndDelete(
+      chosenModelId
+    );
 
     if (!deletedModel) {
       return res.status(404).json({
@@ -400,9 +457,82 @@ app.delete('/api/deleteChosenModel', async (req, res) => {
   }
 });
 
+// [OLD] новый запрос от текстовой модели
+// app.post('/api/request', async (req, res) => {
+//   try {
+//     const authHeader = req.headers.authorization;
+//     const token = authHeader?.split(' ')[1];
 
+//     const findToken = await UserChoosedModel.findOne({
+//       token,
+//     });
 
-// новый запрос
+//     const aiModelLink = findToken.aiModelLink;
+//     const ownerId = findToken.userLink;
+//     const ownerTlg = findToken.tlgid;
+
+//     // TODO: возвращать ошибку
+//     // if (!findToken){
+//     //   // вернуть ошибку
+//     // }
+
+//     const checkBalance = await UserModel.findOne({
+//       tlgid: findToken.tlgid,
+//     });
+
+//     const balance = checkBalance.balance;
+
+//     console.log('Balance=', balance);
+
+//     // если баланс <20 руб, написать юзеру (владельцу сообшщеение, чтобы пополнил баланс)
+//     // и не выполнять запросы?
+
+//     const { input } = req.body;
+
+//     if (balance < 20) {
+//       console.log('баланс меньше 20');
+//       return res.status(201).json({
+//         status: 'lowbalance',
+//       });
+//     }
+
+//     // Создаем новую запись rqst
+//     const doc = new RequestModel({
+//       aiModelLink: aiModelLink,
+//       ownerId: ownerId,
+//       ownerTlg: ownerTlg,
+//       inputFromRequest: input,
+//       isAuthorised: true,
+//       inputTokens: null,
+//       outputTokens: null,
+//       isRqstOperated: false,
+//     });
+
+//     await doc.save();
+
+//     // TODO: создать функцию запроса к ИИ от разных компаний
+//     const responseFromAi = await rqstToAi(
+//       doc._id,
+//       aiModelLink,
+//       input,
+//       ownerTlg
+//     );
+
+//     console.log('responseFromAi', responseFromAi);
+
+//     return res.status(201).json({
+//       status: 'success',
+//       message: responseFromAi,
+//     });
+//   } catch (err) {
+//     console.error('Error choosing AI model:', err);
+//     return res.status(500).json({
+//       status: 'error',
+//     });
+//   }
+// });
+
+// единый endpoint для всех запросов
 app.post('/api/request', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -432,7 +562,12 @@ app.post('/api/request', async (req, res) => {
     // если баланс <20 руб, написать юзеру (владельцу сообшщеение, чтобы пополнил баланс)
     // и не выполнять запросы?
 
-    const { input } = req.body;
+
+    // text_to_text - text to text
+    // text_to_image
+    // image_to_image
+
+    const { input, type = 'text_to_text' } = req.body;
 
     if (balance < 20) {
       console.log('баланс меньше 20');
@@ -451,14 +586,30 @@ app.post('/api/request', async (req, res) => {
       inputTokens: null,
       outputTokens: null,
       isRqstOperated: false,
+      type: type,
     });
 
     await doc.save();
 
     // TODO: создать функцию запроса к ИИ от разных компаний
-    const responseFromAi = await rqstToAi(doc._id, aiModelLink, input, ownerTlg);
+    const responseFromAi = await rqstToAi(
+      doc._id,
+      aiModelLink,
+      input,
+      ownerTlg,
+      type,
+      req
+    );
 
     console.log('responseFromAi', responseFromAi);
+
+    // Проверяем, вернулась ли ошибка из функции
+    if (responseFromAi?.error) {
+      return res.status(400).json({
+        status: 'error',
+        message: responseFromAi.message,
+      });
+    }
 
     return res.status(201).json({
       status: 'success',
@@ -467,31 +618,137 @@ app.post('/api/request', async (req, res) => {
   } catch (err) {
     console.error('Error choosing AI model:', err);
     return res.status(500).json({
-      status: 'error'
-      
+      status: 'error',
     });
   }
 });
 
+// [OLD] новый запрос от text to image модели
+// app.post('/api/text_to_image', async (req, res) => {
+//   try {
+//     const authHeader = req.headers.authorization;
+//     const token = authHeader?.split(' ')[1];
 
+//     if (!token) {
+//       return res.status(401).json({
+//         status: 'error',
+//         message: 'Authorization token required',
+//       });
+//     }
+
+//     const findToken = await UserChoosedModel.findOne({ token });
+
+//     //TODO: добавить проверку, что данный токен от модели, которая генерит изображения
+
+//     if (!findToken) {
+//       return res.status(401).json({
+//         status: 'error',
+//         message: 'Invalid token',
+//       });
+//     }
+
+//     const ownerTlg = findToken.tlgid;
+//     const checkBalance = await UserModel.findOne({ tlgid: ownerTlg });
+//     const balance = checkBalance.balance;
+
+//     console.log('Balance=', balance);
+
+//     if (balance < 20) {
+//       console.log('баланс меньше 20');
+//       return res.status(201).json({
+//         status: 'lowbalance',
+//       });
+//     }
+
+//     const { text } = req.body;
+
+//     if (!text) {
+//       return res.status(400).json({
+//         status: 'error',
+//         message: 'Text prompt is required',
+//       });
+//     }
+
+//     // Создаем OpenAI клиент с OpenRouter
+//     const openai = new OpenAI({
+//       baseURL: 'https://openrouter.ai/api/v1',
+//       apiKey: process.env.OPENROUTER_API_KEY,
+//     });
+
+//     // TODO: подставлять название модели из БД
+
+//     // Генерируем изображение через chat completions API
+//     const completion = await openai.chat.completions.create({
+//       model: 'google/gemini-2.5-flash-image',
+//       messages: [
+//         {
+//           role: 'user',
+//           content: text,
+//         },
+//       ],
+//     });
+
+//     // Выводим ответ без base64 для отладки
+//     const responseForLog = JSON.parse(JSON.stringify(completion));
+//     if (responseForLog.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
+//       const base64Url =
+//         responseForLog.choices[0].message.images[0].image_url.url;
+//       const imageType =
+//         base64Url.match(/^data:image\/(\w+);base64,/)?.[1] || 'unknown';
+//       const base64Length = base64Url.length;
+//       responseForLog.choices[0].message.images[0].image_url.url = `[BASE64_IMAGE_${imageType.toUpperCase()}_${base64Length}_bytes]`;
+//     }
+//     console.log('Full response:', JSON.stringify(responseForLog, null, 2));
+
+//     // Извлекаем base64 изображение из ответа
+//     const messageContent = completion.choices[0].message;
+
+//     if (!messageContent.images || !messageContent.images[0]) {
+//       throw new Error('No image found in response');
+//     }
+
+//     const base64ImageUrl = messageContent.images[0].image_url.url;
+
+//     // Сохраняем изображение на сервере
+//     const savedImagePath = saveBase64Image(base64ImageUrl);
+
+//     // Формируем полный URL для фронтенда
+//     const fullImageUrl = `${req.protocol}://${req.get(
+//       'host'
+//     )}${savedImagePath}`;
+
+//     console.log('Image saved at:', fullImageUrl);
+
+//     // TODO: Сохранить запрос в БД и списать деньги с баланса
+
+//     return res.status(200).json({
+//       status: 'success',
+//       imageUrl: fullImageUrl,
+//     });
+//   } catch (err) {
+//     console.error('Error in text_to_image:', err);
+//     return res.status(500).json({
+//       status: 'error',
+//       message: err.message,
+//     });
+//   }
+// });
 
 // Webhook об оплате
 app.post('/api/webhook_payment', async (req, res) => {
   try {
-
-    const {paydUser, paydSum} = req.body
+    const { paydUser, paydSum } = req.body;
 
     console.log('=== WEBHOOK: Получены данные от платеже из бота ===');
     console.log('Body:', JSON.stringify(req.body, null, 2));
     console.log('=== END WEBHOOK 2 ===');
 
-
     const updatedUser = await UserModel.findOneAndUpdate(
       { tlgid: paydUser },
       {
         $inc: {
-          balance: paydSum
-        }
+          balance: paydSum,
+        },
       },
       { new: true }
     );
@@ -500,18 +757,15 @@ app.post('/api/webhook_payment', async (req, res) => {
     return res.status(200).json({
       status: 'success',
       message: 'Webhook processed successfully',
-      balance: updatedUser.balance
+      balance: updatedUser.balance,
     });
   } catch (err) {
     console.error('Webhook error:', err);
     return res.status(500).json({
-      status: 'error'
+      status: 'error',
     });
   }
 });
-
-
-
 
 // Получение курса USD к RUB из ЦБ РФ
 async function getRate_Rub_Usd() {
@@ -540,165 +794,444 @@ async function getRate_Rub_Usd() {
   }
 }
 
-async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
+// [OLD]
+// async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg) {
+//   try {
+//     const aiModelData = await AiModel.findOne({
+//       _id: aiModelLink,
+//     });
+
+//     if (!aiModelData) {
+//       throw new Error('AI Model not found');
+//     }
+
+//     // const ourAiToken = aiModelData.ourToken;
+//     const ourAiToken = process.env.GPT_TOKEN;
+//     console.log('token=', ourAiToken);
+//     const modelName = aiModelData.nameForRequest;
+
+//     const input_token_priceBasicUsd = aiModelData.input_token_priceBasicUsd;
+//     const output_token_priceBasicUsd = aiModelData.output_token_priceBasicUsd;
+//     const pathToGetResponseFromAi = aiModelData.path;
+
+//     const response = await fetch('https://api.openai.com/v1/responses', {
+//       method: 'POST',
+//       headers: {
+//         'Content-Type': 'application/json',
+//         Authorization: `Bearer ${ourAiToken}`,
+//       },
+//       body: JSON.stringify({
+//         model: modelName,
+//         input: input,
+//       }),
+//     });
+
+//     if (!response.ok) {
+//       throw new Error(
+//         `OpenAI API error: ${response.status} ${response.statusText}`
+//       );
+//     }
+
+//     const data = await response.json();
+
+//     const input_tokens = data?.usage?.input_tokens;
+//     const output_tokens = data?.usage?.output_tokens;
+
+//     const calculate_priceBasicForInputTokensUsd =
+//       (input_tokens * input_token_priceBasicUsd) / 1000000;
+//     const calculate_priceBasicForOutputTokensUsd =
+//       (output_tokens * output_token_priceBasicUsd) / 1000000;
+
+//     const calculate_priceBasicAllRqstUsd =
+//       calculate_priceBasicForInputTokensUsd +
+//       calculate_priceBasicForOutputTokensUsd;
+
+//     const rate = await getRate_Rub_Usd();
+
+//     // FIXME: мой коэф увеличения цены. Сейчас = 2
+//     // Сделать отдельную БД для каждой компании (open Ai, Антропик, ...)
+//     const ourKoefficient = 2;
+
+//     const calculate_priceBasicAllRqstRub =
+//       calculate_priceBasicAllRqstUsd * rate;
+
+//     const priceOurTotalAllRqstRub = Number(
+//       (calculate_priceBasicAllRqstRub * ourKoefficient).toFixed(3)
+//     );
+
+//     const updatedOwner = await UserModel.findOneAndUpdate(
+//       { tlgid: ownerTlg },
+//       {
+//         $inc: {
+//           balance: -priceOurTotalAllRqstRub,
+//         },
+//       },
+//       { new: true }
+//     );
+
+//     console.log(`Баланс обновлен. Новый баланс: ${updatedOwner.balance} RUB`);
+
+//     //input_tokens - входяшие токены за запрос
+//     //output_tokens - output токены за запрос
+
+//     // input_token_priceBasicUsd - базовая цена от openAi за 1млн input
+//     // output_token_priceBasicUsd - базовая цена от openAi за 1млн output
+
+//     // calculate_priceBasicForInputTokensUsd - цена input токенов текущего запроса (по цена openAi)
+//     // calculate_priceBasicForOutputTokensUsd - цена output токенов текущего запроса (по цена openAi)
+
+//     // rate - ставка 1 usd = X rub (по ЦБ РФ)
+//     // ourKoefficient - мой коэффициент повышения цены
+
+//     // calculate_priceBasicAllRqstRub - стоимость всего запроса в Руб (по базовой цене openAi)
+//     // priceOurTotalAllRqstRub - стоимость запроса в Руб, с учетом моего коэф повышения цены
+
+//     console.log(`1 usd= ${rate} rub`);
+//     console.log('цена запрос в USD =', calculate_priceBasicAllRqstUsd);
+//     console.log('цена запрос в RUB =', calculate_priceBasicAllRqstRub);
+
+//     const updateRqst = await RequestModel.findOneAndUpdate(
+//       { _id: rqstNumber },
+//       {
+//         $set: {
+//           inputTokens: input_tokens,
+//           outputTokens: output_tokens,
+//           priceBasicForInputTokensUsd: calculate_priceBasicForInputTokensUsd,
+//           priceBasicForOutputTokensUsd: calculate_priceBasicForOutputTokensUsd,
+//           isRqstOperated: true,
+//           rate: rate,
+//           priceOurTotalAllRqstRub: priceOurTotalAllRqstRub,
+//         },
+//       },
+//       { new: true }
+//     );
+
+//     console.log('reply=', data?.output);
+
+//     // Извлечение ответа от AI
+//     // const replyFromAi = data?.output?.[0]?.content?.[0]?.text || '';
+
+//     console.log('Исходный путь:', pathToGetResponseFromAi);
+//     console.log('Полный ответ от API:', JSON.stringify(data, null, 2));
+
+//     // Функция для извлечения значения по строковому пути
+//     const getValueByPath = (obj, path) => {
+//       if (!path) return '';
+
+//       // Удаляем префикс "data?." или "data." если есть
+//       let cleanPath = path.replace(/^data\??\./i, '');
+
+//       // Убираем все символы optional chaining '?'
+//       cleanPath = cleanPath.replace(/\?/g, '');
+
+//       // Преобразуем [0] в .0 для единообразия
+//       cleanPath = cleanPath.replace(/\[(\d+)\]/g, '.$1');
+
+//       // Разбиваем путь на ключи
+//       const keys = cleanPath.split('.').filter(Boolean);
+
+//       // Проходим по всем ключам
+//       let result = obj;
+//       for (const key of keys) {
+//         if (result == null) return '';
+//         result = result[key];
+//       }
+
+//       return result || '';
+//     };
+
+//     const replyFromAi = getValueByPath(data, pathToGetResponseFromAi);
+
+//     if (!replyFromAi) {
+//       console.warn('No reply text found in AI response');
+//     }
+
+//     return replyFromAi;
+//   } catch (err) {
+//     console.error('Error in rqstToAi:', err);
+//     throw err;
+//   }
+// }
+
+// ============ Вспомогательные функции для rqstToAi_new ============
+
+/**
+ * Создаёт OpenAI клиент для OpenRouter
+ */
+function createOpenRouterClient() {
+  return new OpenAI({
+    baseURL: 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY,
+  });
+}
+
+/**
+ * Получает коэффициент наценки из БД (с fallback на значение по умолчанию)
+ */
+async function getOurCoefficient() {
+  const config = await OurKoefficientModel.findOne();
+  if (!config?.value) {
+    console.warn('Коэффициент наценки не найден в БД, используется значение по умолчанию: 2');
+    return 2;
+  }
+  return config.value;
+}
+
+/**
+ * Выполняет биллинг: расчёт стоимости, списание баланса, обновление запроса
+ */
+async function processBilling({
+  rqstNumber,
+  inputTokens,
+  outputTokens,
+  inputTokenPriceUsd,
+  outputTokenPriceUsd,
+  ownerTlg,
+}) {
+  // Проверка наличия данных о токенах
+  const hasUsageData = inputTokens > 0 || outputTokens > 0;
+  if (!hasUsageData) {
+    console.warn('⚠️ API не вернул данные о токенах. Биллинг пропущен.');
+    await RequestModel.findOneAndUpdate(
+      { _id: rqstNumber },
+      { $set: { isRqstOperated: true, billingSkipped: true } }
+    );
+    return { billingSkipped: true };
+  }
+
+  // Получаем коэффициент из БД
+  const ourCoefficient = await getOurCoefficient();
+
+  // Расчёт стоимости токенов в USD (цена за 1 млн токенов)
+  const inputCostUsd = (inputTokens * inputTokenPriceUsd) / 1_000_000;
+  const outputCostUsd = (outputTokens * outputTokenPriceUsd) / 1_000_000;
+  const totalCostUsd = inputCostUsd + outputCostUsd;
+
+  // Конвертация в рубли
+  const rate = await getRate_Rub_Usd();
+  const totalCostRub = totalCostUsd * rate;
+  const finalPriceRub = Number((totalCostRub * ourCoefficient).toFixed(3));
+
+  // Списание с баланса
+  const updatedOwner = await UserModel.findOneAndUpdate(
+    { tlgid: ownerTlg },
+    { $inc: { balance: -finalPriceRub } },
+    { new: true }
+  );
+
+  if (!updatedOwner) {
+    throw new Error('Пользователь не найден');
+  }
+
+  // Обновление запроса в БД
+  await RequestModel.findOneAndUpdate(
+    { _id: rqstNumber },
+    {
+      $set: {
+        inputTokens,
+        outputTokens,
+        priceBasicForInputTokensUsd: inputCostUsd,
+        priceBasicForOutputTokensUsd: outputCostUsd,
+        isRqstOperated: true,
+        rate,
+        priceOurTotalAllRqstRub: finalPriceRub,
+      },
+    }
+  );
+
+  console.log(`✅ Баланс обновлен. Новый баланс: ${updatedOwner.balance} RUB`);
+  console.log(`   Коэффициент: ${ourCoefficient} | Курс: 1 USD = ${rate} RUB`);
+  console.log(`   Стоимость: ${totalCostUsd.toFixed(6)} USD = ${finalPriceRub} RUB`);
+
+  return {
+    inputCostUsd,
+    outputCostUsd,
+    totalCostUsd,
+    rate,
+    finalPriceRub,
+    ourCoefficient,
+  };
+}
+
+// ============ Обработчики для разных типов моделей (Strategy Pattern) ============
+
+/**
+ * Обработчик для text_to_text моделей
+ */
+async function handleTextToText({ openai, modelName, input }) {
+  const completion = await openai.chat.completions.create({
+    model: modelName,
+    messages: [{ role: 'user', content: input }],
+  });
+
+  console.log('Full API response:', JSON.stringify(completion, null, 2));
+
+  const replyFromAi = completion.choices[0]?.message?.content || '';
+  if (!replyFromAi) {
+    console.warn('No reply text found in AI response');
+  }
+  console.log('Reply from AI:', replyFromAi);
+
+  return {
+    result: replyFromAi,
+    inputTokens: completion.usage?.prompt_tokens || 0,
+    outputTokens: completion.usage?.completion_tokens || 0,
+  };
+}
+
+/**
+ * Извлекает base64 изображение из ответа API (поддержка разных форматов)
+ */
+function extractImageFromResponse(completion) {
+  const message = completion.choices?.[0]?.message;
+  if (!message) return null;
+
+  // Формат 1: message.images[].image_url.url (Gemini)
+  if (message.images?.[0]?.image_url?.url) {
+    return message.images[0].image_url.url;
+  }
+
+  // Формат 2: message.content как массив с image_url (OpenAI Vision style)
+  if (Array.isArray(message.content)) {
+    const imageContent = message.content.find(
+      (item) => item.type === 'image_url' || item.type === 'image'
+    );
+    if (imageContent?.image_url?.url) {
+      return imageContent.image_url.url;
+    }
+    if (imageContent?.url) {
+      return imageContent.url;
+    }
+  }
+
+  // Формат 3: data[].b64_json (DALL-E style)
+  if (completion.data?.[0]?.b64_json) {
+    return `data:image/png;base64,${completion.data[0].b64_json}`;
+  }
+
+  // Формат 4: data[].url (URL вместо base64)
+  if (completion.data?.[0]?.url) {
+    return completion.data[0].url;
+  }
+
+  return null;
+}
+
+/**
+ * Обработчик для text_to_image моделей
+ */
+async function handleTextToImage({ openai, modelName, input, req }) {
+  const completion = await openai.chat.completions.create({
+    model: modelName,
+    messages: [{ role: 'user', content: input }],
+  });
+
+  // Логирование структуры ответа (без base64 данных)
+  const responseForLog = JSON.parse(JSON.stringify(completion));
+  const truncateBase64 = (obj) => {
+    if (typeof obj === 'string' && obj.startsWith('data:image')) {
+      const imageType = obj.match(/^data:image\/(\w+);base64,/)?.[1] || 'unknown';
+      return `[BASE64_IMAGE_${imageType.toUpperCase()}_${obj.length}_bytes]`;
+    }
+    if (typeof obj === 'object' && obj !== null) {
+      for (const key in obj) {
+        obj[key] = truncateBase64(obj[key]);
+      }
+    }
+    return obj;
+  };
+  console.log('Full response:', JSON.stringify(truncateBase64(responseForLog), null, 2));
+
+  // Извлекаем изображение из ответа
+  const base64ImageUrl = extractImageFromResponse(completion);
+
+  if (!base64ImageUrl) {
+    console.error('❌ Не удалось найти изображение. Структура message:',
+      JSON.stringify(completion.choices?.[0]?.message, null, 2)?.substring(0, 500));
+    throw new Error('No image found in response. Check console for response structure.');
+  }
+
+  // Если это URL (не base64) — нужно скачать
+  if (base64ImageUrl.startsWith('http')) {
+    console.log('Image URL received:', base64ImageUrl);
+    return {
+      result: base64ImageUrl,
+      inputTokens: completion.usage?.prompt_tokens || 0,
+      outputTokens: completion.usage?.completion_tokens || 0,
+    };
+  }
+
+  // Сохраняем base64 изображение
+  const savedImagePath = saveBase64Image(base64ImageUrl);
+  const fullImageUrl = `${req.protocol}://${req.get('host')}${savedImagePath}`;
+
+  console.log('Image saved at:', fullImageUrl);
+
+  return {
+    result: fullImageUrl,
+    inputTokens: completion.usage?.prompt_tokens || 0,
+    outputTokens: completion.usage?.completion_tokens || 0,
+  };
+}
+
+/**
+ * Маппинг типов моделей на обработчики
+ */
+const modelTypeHandlers = {
+  text_to_text: handleTextToText,
+  text_to_image: handleTextToImage,
+};
+
+// ============ Основная функция ============
+
+async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg, type, req) {
   try {
-    const aiModelData = await AiModel.findOne({
-      _id: aiModelLink,
-    });
+    const aiModelData = await AiModel.findOne({ _id: aiModelLink });
 
     if (!aiModelData) {
       throw new Error('AI Model not found');
     }
 
-    // const ourAiToken = aiModelData.ourToken;
-    const ourAiToken = process.env.GPT_TOKEN
-    console.log('token=',ourAiToken)
-    const modelName = aiModelData.nameForRequest;
+    const { type: modelType, nameForRequest: modelName } = aiModelData;
+    const { input_token_priceBasicUsd, output_token_priceBasicUsd } = aiModelData;
 
-    const input_token_priceBasicUsd = aiModelData.input_token_priceBasicUsd;
-    const output_token_priceBasicUsd = aiModelData.output_token_priceBasicUsd;
-    const pathToGetResponseFromAi = aiModelData.path
+    // Проверка соответствия типа модели и типа запроса
+    if (modelType && modelType.toLowerCase() !== type.toLowerCase()) {
+      return {
+        error: true,
+        message: `модель ${modelName} работает только с type = ${modelType}`,
+      };
+    }
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${ourAiToken}`,
-      },
-      body: JSON.stringify({
-        model: modelName,
-        input: input,
-      }),
+    // Получаем обработчик для типа модели
+    const handler = modelTypeHandlers[modelType];
+    if (!handler) {
+      throw new Error(`Неподдерживаемый тип модели: ${modelType}`);
+    }
+
+    const openai = createOpenRouterClient();
+
+    // Выполняем запрос через соответствующий обработчик
+    const { result, inputTokens, outputTokens } = await handler({
+      openai,
+      modelName,
+      input,
+      req,
     });
 
-    if (!response.ok) {
-      throw new Error(
-        `OpenAI API error: ${response.status} ${response.statusText}`
-      );
-    }
+    // Обработка биллинга
+    await processBilling({
+      rqstNumber,
+      inputTokens,
+      outputTokens,
+      inputTokenPriceUsd: input_token_priceBasicUsd,
+      outputTokenPriceUsd: output_token_priceBasicUsd,
+      ownerTlg,
+    });
 
-    const data = await response.json();
-
-    const input_tokens = data?.usage?.input_tokens;
-    const output_tokens = data?.usage?.output_tokens;
-
-    const calculate_priceBasicForInputTokensUsd =
-      (input_tokens * input_token_priceBasicUsd) / 1000000;
-    const calculate_priceBasicForOutputTokensUsd =
-      (output_tokens * output_token_priceBasicUsd) / 1000000;
-
-    const calculate_priceBasicAllRqstUsd =
-      calculate_priceBasicForInputTokensUsd +
-      calculate_priceBasicForOutputTokensUsd;
-
-    const rate = await getRate_Rub_Usd();
-
-    // FIXME: мой коэф увеличения цены. Сейчас = 2
-    // Сделать отдельную БД для каждой компании (open Ai, Антропик, ...)
-    const ourKoefficient = 2;
-
-    const calculate_priceBasicAllRqstRub =
-      calculate_priceBasicAllRqstUsd * rate;
-
-    const priceOurTotalAllRqstRub = Number((calculate_priceBasicAllRqstRub * ourKoefficient).toFixed(3))
-
-    const updatedOwner = await UserModel.findOneAndUpdate(
-      { tlgid: ownerTlg },
-      {
-        $inc: {
-          balance: -priceOurTotalAllRqstRub
-        }
-      },
-      { new: true }
-    );
-
-    console.log(`Баланс обновлен. Новый баланс: ${updatedOwner.balance} RUB`);
-
-
-
-    //input_tokens - входяшие токены за запрос
-    //output_tokens - output токены за запрос
-
-    // input_token_priceBasicUsd - базовая цена от openAi за 1млн input
-    // output_token_priceBasicUsd - базовая цена от openAi за 1млн output
-
-    // calculate_priceBasicForInputTokensUsd - цена input токенов текущего запроса (по цена openAi)
-    // calculate_priceBasicForOutputTokensUsd - цена output токенов текущего запроса (по цена openAi)
-
-    // rate - ставка 1 usd = X rub (по ЦБ РФ)
-    // ourKoefficient - мой коэффициент повышения цены
-
-    // calculate_priceBasicAllRqstRub - стоимость всего запроса в Руб (по базовой цене openAi)
-    // priceOurTotalAllRqstRub - стоимость запроса в Руб, с учетом моего коэф повышения цены
-    
-
-    console.log(`1 usd= ${rate} rub`);
-    console.log('цена запрос в USD =', calculate_priceBasicAllRqstUsd);
-    console.log('цена запрос в RUB =', calculate_priceBasicAllRqstRub);
-
-
-
-    const updateRqst = await RequestModel.findOneAndUpdate(
-      { _id: rqstNumber },
-      {
-        $set: {
-          inputTokens: input_tokens,
-          outputTokens: output_tokens,
-          priceBasicForInputTokensUsd: calculate_priceBasicForInputTokensUsd,
-          priceBasicForOutputTokensUsd: calculate_priceBasicForOutputTokensUsd,
-          isRqstOperated: true,
-          rate: rate,
-          priceOurTotalAllRqstRub: priceOurTotalAllRqstRub
-        },
-      },
-      { new: true }
-    );
-
-
-    console.log('reply=',data?.output)
-
-
-    // Извлечение ответа от AI
-    // const replyFromAi = data?.output?.[0]?.content?.[0]?.text || '';
-
-    console.log('Исходный путь:', pathToGetResponseFromAi)
-    console.log('Полный ответ от API:', JSON.stringify(data, null, 2))
-
-    // Функция для извлечения значения по строковому пути
-    const getValueByPath = (obj, path) => {
-      if (!path) return '';
-
-      // Удаляем префикс "data?." или "data." если есть
-      let cleanPath = path.replace(/^data\??\./i, '');
-
-      // Убираем все символы optional chaining '?'
-      cleanPath = cleanPath.replace(/\?/g, '');
-
-      // Преобразуем [0] в .0 для единообразия
-      cleanPath = cleanPath.replace(/\[(\d+)\]/g, '.$1');
-
-      // Разбиваем путь на ключи
-      const keys = cleanPath.split('.').filter(Boolean);
-
-      // Проходим по всем ключам
-      let result = obj;
-      for (const key of keys) {
-        if (result == null) return '';
-        result = result[key];
-      }
-
-      return result || '';
-    };
-
-    const replyFromAi = getValueByPath(data, pathToGetResponseFromAi);
-
-    if (!replyFromAi) {
-      console.warn('No reply text found in AI response');
-    }
-
-    return replyFromAi;
+    return result;
   } catch (err) {
-    console.error('Error in rqstToAi:', err);
+    console.error('Error in rqstToAi_new:', err);
     throw err;
   }
 }
@@ -755,12 +1288,13 @@ app.get('/api/getRequestHistory', async (req, res) => {
 app.post('/api/createAiModel', async (req, res) => {
   try {
     const doc = new AiModel({
-      nameForUser: 'gpt-5.1',
-      nameForRequest: 'gpt-5.1',
-      input_token_priceBasicUsd: 1.25 ,
-      output_token_priceBasicUsd: 10 ,
-      input_token_priceOurRub: 207.5,
-      output_token_priceOurRub: 1660
+      nameForUser: 'Gemini 3 Pro (Nano Banana Pro)',
+      nameForRequest: 'google/gemini-3-pro-image-preview',
+      input_token_priceBasicUsd: 2,
+      output_token_priceBasicUsd: 120,
+      input_token_priceOurRub: 320,
+      output_token_priceOurRub: 19200,
+      type: 'text_to_image'
     });
 
     await doc.save(); // Сохранение в БД
@@ -771,15 +1305,13 @@ app.post('/api/createAiModel', async (req, res) => {
   }
 });
 
-
 // для создания новых промокодов
 app.post('/api/createPromocode', async (req, res) => {
   try {
     const doc = new PromocodeModel({
       promocode: 'easydev',
       balance: 50,
-      isActive: true ,
-
+      isActive: true,
     });
 
     await doc.save(); // Сохранение в БД
@@ -875,7 +1407,6 @@ app.post('/api/applyPromocode', async (req, res) => {
     });
   }
 });
-
 
 // 404 handler
 app.use((req, res) => {

@@ -35,6 +35,9 @@ const AiModelsSchema = new mongoose.Schema(
     },
     path: {
       type: String
+    },
+    type:  {
+      type: String
     }
 
     
