@@ -9,6 +9,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 
+// ver new
+
 dotenv.config();
 
 // Получаем __dirname для ES модулей
@@ -535,6 +537,9 @@ app.delete('/api/deleteChosenModel', async (req, res) => {
 // единый endpoint для всех запросов
 app.post('/api/request', async (req, res) => {
   try {
+
+    console.log('new endpoint here')
+
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
 
