@@ -36,8 +36,9 @@ const AiModelsSchema = new mongoose.Schema(
     path: {
       type: String
     },
-    type:  {
-      type: String
+    type: {
+      type: [String],  // массив типов, например: ['text_to_text', 'text_to_image']
+      default: []
     }
 
     
