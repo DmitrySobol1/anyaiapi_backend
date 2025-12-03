@@ -468,22 +468,37 @@ app.post('/api/request', async (req, res) => {
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
 
+    
+
     const findToken = await UserChoosedModel.findOne({
       token,
     });
+
+    if (!authHeader || !findToken) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'передайте верный токен'
+      });
+    }
+
+
 
     const aiModelLink = findToken.aiModelLink;
     const ownerId = findToken.userLink;
     const ownerTlg = findToken.tlgid;
 
-    // TODO: возвращать ошибку
-    // if (!findToken){
-    //   // вернуть ошибку
-    // }
+    
 
     const checkBalance = await UserModel.findOne({
       tlgid: findToken.tlgid,
     });
+
+    if (!checkBalance) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'пользователь не найден'
+      });
+    }
 
     const balance = checkBalance.balance;
 
@@ -497,7 +512,43 @@ app.post('/api/request', async (req, res) => {
     // text_to_image
     // image_to_image
 
-    const { input, type = 'text_to_text' } = req.body;
+    const { input, type = 'text_to_text', photo_url, format } = req.body;
+
+    // Валидация типов параметров
+    if (!input) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Поле input обязательно'
+      });
+    }
+
+    if (typeof input !== 'string') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Поле input должно быть строкой'
+      });
+    }
+
+    if (typeof type !== 'string') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Поле type должно быть строкой'
+      });
+    }
+
+    if (photo_url !== undefined && typeof photo_url !== 'string') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Поле photo_url должно быть строкой'
+      });
+    }
+
+    if (format !== undefined && typeof format !== 'string') {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Поле format должно быть строкой'
+      });
+    }
 
     if (balance < 20) {
       console.log('баланс меньше 20');
@@ -785,8 +836,15 @@ function extractImageFromResponse(completion) {
 /**
  * Обработчик для text_to_image моделей
  */
-async function handleTextToImage({ openai, modelName, input, req }) {
+const ALLOWED_FORMATS = ['1:1', '2:3', '3:2', '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'];
 
+async function handleTextToImage({ openai, modelName, input, req }) {
+  if (req.body.format && !ALLOWED_FORMATS.includes(req.body.format)) {
+    return {
+      error: true,
+      message: `Неверный format. Допустимые значения: ${ALLOWED_FORMATS.join(', ')}`,
+    };
+  }
 
   const completion = await openai.chat.completions.create({
     model: modelName,
@@ -816,9 +874,14 @@ async function handleTextToImage({ openai, modelName, input, req }) {
   const base64ImageUrl = extractImageFromResponse(completion);
 
   if (!base64ImageUrl) {
+    const textContent = completion.choices?.[0]?.message?.content;
     console.error('❌ Не удалось найти изображение. Структура message:',
       JSON.stringify(completion.choices?.[0]?.message, null, 2)?.substring(0, 500));
-    throw new Error('No image found in response. Check console for response structure.');
+
+    return {
+      error: true,
+      message: 'поменяйте запрос в input',
+    };
   }
 
   // Если это URL (не base64) — нужно скачать
@@ -846,6 +909,20 @@ async function handleTextToImage({ openai, modelName, input, req }) {
 
 
 async function handleImageToImage({ openai, modelName, input, req }) {
+  if (!req.body.photo_url) {
+    return {
+      error: true,
+      message: 'Для image_to_image необходимо передать photo_url',
+    };
+  }
+
+  if (req.body.format && !ALLOWED_FORMATS.includes(req.body.format)) {
+    return {
+      error: true,
+      message: `Неверный format. Допустимые значения: ${ALLOWED_FORMATS.join(', ')}`,
+    };
+  }
+
   const completion = await openai.chat.completions.create({
     model: modelName,
     messages: [{
@@ -894,9 +971,14 @@ async function handleImageToImage({ openai, modelName, input, req }) {
   const base64ImageUrl = extractImageFromResponse(completion);
 
   if (!base64ImageUrl) {
+    const textContent = completion.choices?.[0]?.message?.content;
     console.error('❌ Не удалось найти изображение. Структура message:',
       JSON.stringify(completion.choices?.[0]?.message, null, 2)?.substring(0, 500));
-    throw new Error('No image found in response. Check console for response structure.');
+
+    return {
+      error: true,
+      message: 'поменяйте запрос в input',
+    };
   }
 
   // Если это URL (не base64) — нужно скачать
@@ -924,6 +1006,13 @@ async function handleImageToImage({ openai, modelName, input, req }) {
 
 
 async function handleImageToText({ openai, modelName, input, req }) {
+  if (!req.body.photo_url) {
+    return {
+      error: true,
+      message: 'необходимо передать photo_url',
+    };
+  }
+
   // Формируем промпт для описания изображения
   const prompt = input || 'Опиши подробно, что изображено на этой картинке.';
 
@@ -1014,12 +1103,19 @@ async function rqstToAi(rqstNumber, aiModelLink, input, ownerTlg, type, req) {
     const openai = createOpenRouterClient();
 
     // Выполняем запрос через соответствующий обработчик
-    const { result, inputTokens, outputTokens } = await handler({
+    const handlerResult = await handler({
       openai,
       modelName,
       input,
       req,
     });
+
+    // Проверяем, вернул ли обработчик ошибку
+    if (handlerResult.error) {
+      return handlerResult;
+    }
+
+    const { result, inputTokens, outputTokens } = handlerResult;
 
     // Обработка биллинга
     await processBilling({
