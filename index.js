@@ -465,6 +465,9 @@ app.post('/api/request', async (req, res) => {
   try {
 
 
+    console.log('body=', req.body)
+    // return
+
     const authHeader = req.headers.authorization;
     const token = authHeader?.split(' ')[1];
 
@@ -487,6 +490,7 @@ app.post('/api/request', async (req, res) => {
     const ownerId = findToken.userLink;
     const ownerTlg = findToken.tlgid;
 
+    console.log('aiModelLink', aiModelLink)
     
 
     const checkBalance = await UserModel.findOne({
@@ -550,10 +554,18 @@ app.post('/api/request', async (req, res) => {
       });
     }
 
-    if (balance < 20) {
-      console.log('баланс меньше 20');
+    // TODO: временное решение. Проверка, не выбрана ли Nano banano 3
+    if (balance <= 10 && aiModelLink.equals('692ae632162553827a3ddfbc')) {
+      console.log('баланс меньше 10 и выбрано Nano banano Pro');
       return res.status(201).json({
-        status: 'lowbalance',
+        status: 'низкий баланс. используйте модель дешевле',
+      });
+    }
+
+     if (balance < 6) {
+      console.log('баланс меньше 6');
+      return res.status(201).json({
+        status: 'низкий баланс',
       });
     }
 
